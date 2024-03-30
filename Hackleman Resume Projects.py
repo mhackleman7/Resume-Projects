@@ -327,43 +327,50 @@ def forecast_5_year_fcfe(ticker_symbol):
     ebit = income_statement.loc['EBIT'].iloc[:4][::-1]
     tax_rate_for_calcs = income_statement.loc['Tax Rate For Calcs'].iloc[0]
 
-    try:
-        depreciation_and_amortization = abs(cash_flow_statement.loc['Depreciation And Amortization'].iloc[:4].mean())
-    except KeyError:
-        depreciation_and_amortization = 0  # Default to 0 if not available
-    
-    try:
-        purchase_of_ppe = abs(cash_flow_statement.loc['Purchase of PPE'].iloc[:4].mean())
-    except KeyError:
-        purchase_of_ppe = 0  # Default to 0 if not available
+    # Handling 'Purchase of PPE' and 'Capital Expenditure'
+    if 'Purchase of PPE' in cash_flow_statement.index:
+        purchase_of_ppe_series = abs(cash_flow_statement.loc['Purchase of PPE'].iloc[:4])
+    elif 'Capital Expenditure' in cash_flow_statement.index:
+        purchase_of_ppe_series = abs(cash_flow_statement.loc['Capital Expenditure'].iloc[:4])
+    else:
+        purchase_of_ppe_series = pd.Series([0, 0, 0, 0])
+
+    # Direct mean calculation, falling back to 0 if not available
+    depreciation_and_amortization = abs(cash_flow_statement.loc['Depreciation And Amortization'].iloc[:4].mean() if 'Depreciation And Amortization' in cash_flow_statement.index else 0)
 
     total_debt = balance_sheet.get('Total Debt', pd.Series([0])).iloc[0]
     current_assets = balance_sheet.get('Current Assets', pd.Series([0])).iloc[0]
-    cash_equivalents = balance_sheet.get('Cash And Cash Equivalents', pd.Series([0])).iloc[0] + balance_sheet.get('Cash Cash Equivalents And Short Term Investments', pd.Series([0])).iloc[0]
+    cash_and_equivalents = balance_sheet.get('Cash And Cash Equivalents', pd.Series([0])).iloc[0] + balance_sheet.get('Cash Cash Equivalents And Short Term Investments', pd.Series([0])).iloc[0]
     current_liabilities = balance_sheet.get('Current Liabilities', pd.Series([0])).iloc[0]
 
-
-    if current_liabilities > 0:
-        adjusted_working_capital = ((current_assets - cash_equivalents) - current_liabilities)
-    else:
-        adjusted_working_capital = 0
+    adjusted_working_capital = (current_assets - cash_and_equivalents) - current_liabilities if current_liabilities > 0 else 0
 
     cagr = (revenues.iloc[-1] / revenues.iloc[0]) ** (1 / (len(revenues) - 1)) - 1
     average_ebit_margin = ebit.mean() / revenues.mean()
-    debt_ratio = total_debt / (total_debt + market_cap) if total_debt + market_cap != 0 else 0
+    debt_ratio = total_debt / (total_debt + market_cap) if total_debt + market_cap != 0 else 0.2
 
-    # Calculate the debt ratio
-    debt_ratio = total_debt / (total_debt + market_cap)
+    # If the calculated debt_ratio is 0, set it to 0.2
+    debt_ratio = 0.2 if debt_ratio == 0 else debt_ratio
+
+    # Calculating yearly ratios
+    yearly_capex_ratios = [ppe / rev if rev != 0 else 0 for ppe, rev in zip(purchase_of_ppe_series, revenues)]
+    yearly_dep_ratios = [depreciation_and_amortization / rev if rev != 0 else 0 for rev in revenues]
+    yearly_wcinv_ratios = [adjusted_working_capital / rev if rev != 0 else 0 for rev in revenues]
+
+    average_capex = np.mean(yearly_capex_ratios)
+    average_dep = np.mean(yearly_dep_ratios)
+    average_wcinv = np.mean(yearly_wcinv_ratios)
 
     forecasted_revenues = [revenues.iloc[-1] * (1 + cagr) ** i for i in range(1, 6)]
     forecasted_ebit = [rev * average_ebit_margin for rev in forecasted_revenues]
-
-    forecasted_fcfe = []
-    for year, ebit_val in enumerate(forecasted_ebit, start=1):
-        # Calculate FCFE considering the debt ratio on CapEx and working capital changes
-        fcfe = ebit_val * (1 - tax_rate_for_calcs) + ((purchase_of_ppe - depreciation_and_amortization) * (1 - debt_ratio)) - (adjusted_working_capital * (1 - debt_ratio))
-        forecasted_fcfe.append(fcfe)
-
+    forecasted_capex = [rev * average_capex for rev in forecasted_revenues]
+    forecasted_dep = [rev * average_dep for rev in forecasted_revenues]
+    forecasted_wcinv = [rev * average_wcinv for rev in forecasted_revenues]
+    
+    forecasted_fcfe = [forecasted_ebit[i] * (1 - tax_rate_for_calcs) +
+                       ((forecasted_capex[i] - forecasted_dep[i]) * (1 - debt_ratio)) -
+                       (forecasted_wcinv[i] * (1 - debt_ratio)) for i in range(5)]
+    
     fcfe_per_share_forecast = [fcfe / shares_outstanding for fcfe in forecasted_fcfe]
 
     forecast_df = pd.DataFrame({
@@ -371,20 +378,51 @@ def forecast_5_year_fcfe(ticker_symbol):
         'FCFE per Share': fcfe_per_share_forecast
     }).set_index('Year')
 
-    return forecast_df
+    detailed_forecast_df = pd.DataFrame({
+        'Forecasted Revenue': forecasted_revenues,
+        'Forecasted EBIT': forecasted_ebit,
+        'Forecasted Capex': forecasted_capex,
+        'Forecasted Dep': forecasted_dep,
+        'Forecasted Working Capital Investment': forecasted_wcinv,
+        'Year': range(1, 6)
+    }).set_index('Year')
+    
+    # Include additional variables in the DataFrame
+    detailed_forecast_df['Tax Rate for Calcs'] = tax_rate_for_calcs
+    detailed_forecast_df['Growth Rate'] = cagr
+    detailed_forecast_df['Required Return'] = req_return  # Assume req_return is defined elsewhere
+    detailed_forecast_df['Debt Ratio'] = debt_ratio
+    detailed_forecast_df['Shares'] = shares_outstanding
+    
+    # Return both the FCFE per share forecast and the detailed forecast DataFrame
+    return forecast_df, detailed_forecast_df
 
 # Define the list of tickers
 tickers = ["INTC", "GOOG", "AAPL", "MSFT", "KO", "TSLA", "NVDA", "AMZN", "AVGO", "V", "WMT", "UNH", "HD", "OXY", "JNJ", "COST", "CVX", "AMD", "MCD", "CSCO", "ABT", "CAT", "TXN", "PFE", "PM", "UPS", "T", "VZ", "DE", "BA", "LMT", "SBUX"]
 
-# Initialize an empty dictionary to store forecast DataFrames
 forecast_dfs = {}
+
+excel_path = r'C:\Users\mhack\OneDrive\Documents\Investment Analysis\Hackleman Resume Project.xlsx'
 
 # Iterate through the tickers and call the forecast function for each
 for ticker in tickers:
-    forecast_dfs[ticker] = forecast_5_year_fcfe(ticker)
+    # Unpack the two DataFrames returned by the function
+    fcfe_forecast, detailed_forecast = forecast_5_year_fcfe(ticker)
+    
+    forecast_dfs[ticker] = fcfe_forecast
+    
+    if fcfe_forecast['FCFE per Share'].min() < 0:
+        # Use ExcelWriter with mode 'a' to append to an existing workbook
+        # Dynamically name the sheet based on the ticker
+        sheet_name = f"FCFE Review - {ticker}"
+        with pd.ExcelWriter(excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            detailed_forecast.to_excel(writer, sheet_name=sheet_name)
+    
     print(f"Forecast for {ticker}:")
-    print(forecast_dfs[ticker])
+    print(fcfe_forecast)
     print("\n")
+
+print("Detailed FCFE reviews for tickers with negative forecast have been saved to Excel.")
 
 # Optional: Combine into a multi-index DataFrame for a consolidated view
 # Create an empty list to collect the DataFrames
@@ -778,5 +816,8 @@ except PermissionError as e:
     print("Permission denied error: Make sure the file is not open in another program.", e)
 except ValueError as e:
     print("Value error occurred:", e)
+
+
+
 
 
