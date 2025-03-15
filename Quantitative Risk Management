@@ -1,0 +1,526 @@
+#QUANTITATIVE RISK MANAGEMENT
+#Portfolio Returns and Volatility
+Import pandas as pd
+Import numpy as np
+Import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from pypfopt.expected_returns import mean_historical_return
+from pypfopt.risk_models import CovarianceShrinkage
+from scipy.stats import norm
+from scipy.stats import t
+from pypfopt.efficient_frontier import EfficientCVaR
+
+Portfolio = pd.read_csv(‘crisis_portfolio.csv)
+
+asset_prices = portfolio.loc['2008-01-01':'2009-12-31']
+asset_prices.plot().set_ylabel("Closing Prices, USD")
+plt.show()
+
+weights = np.array([0.25, 0.25, 0.25, 0.25])
+
+asset_returns = asset_prices.pct_change()
+portfolio_returns = asset_returns.dot(weights)
+
+portfolio_returns.plot().set_ylabel("Daily Return, %")
+plt.show()
+
+covariance = asset_returns.cov()
+covariance = covariance * 252
+print(covariance)
+
+portfolio_variance = np.transpose(weights) @ covariance @ weights
+portfolio_volatility = np.sqrt(portfolio_variance)
+print(portfolio_volatility)
+
+returns_windowed = portfolio_returns.rolling(30)
+
+volatility_series = returns_windowed.std()*np.sqrt(252)
+
+volatility_series.plot().set_ylabel("Annualized Volatility, 30-day Window")
+plt.show()
+
+#Risk Factors
+mort_del = pd.read_csv(‘mortgage_delinquency.csv’)
+
+portfolio_q_average = portfolio_returns.resample('Q').mean().dropna()
+
+plot_average.scatter(mort_del, portfolio_q_average)
+
+portfolio_q_min = portfolio_returns.resample('Q').min().dropna()
+
+plot_min.scatter(mort_del, portfolio_q_min)
+plt.show()
+
+mort_del = sm.add_constant(mort_del)
+
+results = sm.OLS(port_q_mean, mort_del).fit()
+
+print(results.summary())
+
+mort_del = sm.add_constant(mort_del)
+
+results = sm.OLS(port_q_min, mort_del).fit()
+
+print(results.summary())
+
+mort_del = sm.add_constant(mort_del)
+
+results = sm.OLS(vol_q_mean, mort_del).fit()
+
+print(results.summary())
+
+#Modern Portfolio Theory
+Prices = pd.read_csv(‘crisis_portfolio.csv’)
+prices['Date'] = pd.to_datetime(prices['Date'], format='%d/%m/%Y')
+prices.set_index(['Date'], inplace = True)
+
+mean_returns = mean_historical_return(prices, frequency = 252)
+
+plt.plot(mean_returns, linestyle = 'None', marker = 'o')
+plt.show()
+
+cs = CovarianceShrinkage(prices)
+sample_cov = prices.pct_change().cov() * 252
+
+e_cov = cs.ledoit_wolf()
+
+print("Sample Covariance Matrix\n", sample_cov, "\n")
+print("Efficient Covariance Matrix\n", e_cov, "\n")
+
+epochs = { 'before' : {'start': '1-1-2005', 'end': '31-12-2006'},
+           'during' : {'start': '1-1-2007', 'end': '31-12-2008'},
+           'after'  : {'start': '1-1-2009', 'end': '31-12-2010'}
+         }
+
+e_cov = {}
+for x in epochs.keys():
+  sub_price = prices.loc[epochs[x]['start']:epochs[x]['end']]
+  e_cov[x] = CovarianceShrinkage(sub_price).ledoit_wolf()
+
+print("Efficient Covariance Matrices\n", e_cov)
+
+prices_during = prices.loc[epochs[‘during’][‘start’]:epochs[‘during’][‘end’]
+returns_during = prices_during.pct_change().dropna()
+ecov_during = e_cov[‘during’]
+
+efficient_portfolio_during = CLA(returns_during, ecov_during)
+
+print(efficient_portfolio_during.min_volatility())
+
+(ret, vol, weights) = efficient_portfolio_during.efficient_frontier()
+
+plt.scatter(vol, ret, s = 4, c = 'g', marker = '.', label = 'During')
+plt.legend()
+plt.show()
+
+#GOAL-ORIENTED RISK MANAGEMENT
+#Measuring Risk
+VaR_95 = norm.ppf(0.95)
+
+draws = norm.rvs(size = 100000)
+VaR_99 = np.quantile(draws, 0.99)
+
+plt.hist(draws, bins = 100)
+plt.axvline(x = VaR_95, c='r', label = "VaR at 95% Confidence Level")
+plt.legend(); plt.show()
+
+pm = -portfolio_returns.mean()
+ps = portfolio_returns.std()
+
+VaR_95 = norm.ppf(0.95, loc = pm, scale = ps)
+
+tail_loss = norm.expect(lambda x: x, loc = pm, scale = ps, lb = VaR_95)
+CVaR_95 = (1 / (1 - 0.95)) * pm
+
+plt.hist(norm.rvs(size = 100000, loc = pm, scale = ps), bins = 100)
+plt.axvline(x = VaR_95, c='r', label = "VaR, 95% confidence level")
+plt.axvline(x = CVaR_95, c='g', label = "CVaR, worst 5% of outcomes")
+plt.legend(); plt.show()
+
+#Risk Exposure and Loss
+mu = losses.rolling(30).mean()
+sigma = losses.rolling(30).std()
+rolling_parameters = [(29, mu[i], s) for i,s in enumerate(sigma)]
+
+VaR_99 = np.array( [ t.ppf(0.99, *params) 
+                    for params in rolling_parameters ] )
+
+plt.plot(losses.index, 0.01 * VaR_99 * 100000)
+plt.show()
+
+p = t.fit(portfolio_returns)
+
+VaR_99 = t.ppf(0.99, *p)
+
+tail_loss = t.expect(lambda y: y, args = (p[0],), loc = p[1], scale = p[2], lb = VaR_99 )
+CVaR_99 = (1 / (1 - 0.99)) * tail_loss
+print(CVaR_99)
+
+#Risk Management using VaR & CvaR
+x = np.linspace(-0.25,0.25,1000)
+plt.plot(x,fitted.evaluate(x))
+plt.show()
+
+sample = fitted.resample(100000)
+
+VaR_95 = np.quantile(sample, 0.95)
+print(VaR_95)
+
+ec = EfficientCVaR(None, asset_returns)
+
+optimal_weights = ec.min_cvar()
+
+optimal_weights = { names[i] : optimal_weights[i] for i in optimal_weights}
+
+print(optimal_weights)
+
+min_vol_dict = {}
+
+for x in ['before', 'during', 'after']:
+    mu = mean_historical_return(returns_dict[x]) 
+    S = CovarianceShrinkage(returns_dict[x]).ledoit_wolf()
+
+    ef = EfficientFrontier(mu, S)  
+    min_vol_weights = ef.min_volatility()  
+    
+    min_vol_dict[x] = {names[i]: min_vol_weights[i] for i in min_vol_weights}
+
+ec_dict = {}
+
+for x in ['before', 'during', 'after']: 
+    ec_dict[x] = EfficientCVaR(None, returns_dict[x])
+
+opt_wts_dict = {}
+
+for x in ['before', 'during', 'after']:
+    opt_wts_dict[x] = ec_dict[x].min_cvar()
+
+    opt_wts_dict[x] = {names[i] : opt_wts_dict[x][i] for i in opt_wts_dict[x]}
+
+print("CVaR:\n", pd.DataFrame.from_dict(opt_wts_dict['before']), "\n")
+print("Min Vol:\n", pd.DataFrame.from_dict(min_vol_dict['before']), "\n")
+
+#Creating the Black Scholes Model
+def d1(S, X, T, r, sigma):
+        return (np.log(S/X) + (r + 0.5 * sigma**2)*T) / (sigma * np.sqrt(T))
+
+def d2(d1, T, sigma):
+    return d1 - sigma * np.sqrt(T)
+
+def bs_delta(S, X, T, r, sigma, option_type):
+    """Compute the delta of the Black-Scholes option pricing formula.
+    
+    Arguments:
+    S           -- the current spot price of the underlying stock
+    X           -- the option strike price
+    T           -- the time until maturity (in fractions of a year)
+    r           -- the risk-free interest rate 
+    sigma       -- the returns volatility of the underlying stock
+    option_type -- the option type, either 'call' or 'put'
+    
+    Returns: a numpy.float_ representing the delta value
+    Exceptions raised: ValueError if option_type is not 'call' or 'put'
+    """
+    if option_type == 'call':
+        return norm.cdf(d1(S, X, T, r, sigma))
+    elif option_type == 'put':
+        return norm.cdf(-d1(S, X, T, r, sigma))
+    else:
+        # Raise an error if the option_type is neither a call nor a put
+        raise ValueError("Option type is either 'call' or 'put'.")
+
+def black_scholes(S, X, T, r, sigma, option_type):
+    """Price a European option using the Black-Scholes option pricing formula.
+    
+    Arguments:
+    S           -- the current spot price of the underlying stock
+    X           -- the option strike price
+    T           -- the time until maturity (in fractions of a year)
+    r           -- the risk-free interest rate 
+    sigma       -- the returns volatility of the underlying stock
+    option_type -- the option type, either 'call' or 'put'
+    
+    Returns: a numpy.float_ representing the option value
+    Exceptions raised: ValueError if option_type is not 'call' or 'put'
+    """
+    d_one = d1(S, X, T, r, sigma)
+    d_two = d2(d_one, T, sigma)
+    if option_type == 'call':
+        return S * norm.cdf(d_one) - np.exp(-r * T) * X * norm.cdf(d_two)
+    elif option_type == 'put':
+        return -(S * norm.cdf(-d_one) - np.exp(-r * T) * X * norm.cdf(-d_two))
+    else:
+        # Raise an error if the option_type is neither a call nor a put
+        raise ValueError("Option type is either 'call' or 'put'.")
+
+#Portfolio Hedging: Offsetting Risk
+IBM_returns = pd.read_csv(‘IBM – HistoricalQuotes.csv’)
+
+sigma = np.sqrt(252) * IBM_returns.std()
+
+value_s = black_scholes(S = 90, X = 80, T = 0.5, r = 0.02, 
+                        sigma = sigma, option_type = "call")
+
+value_2s = black_scholes(S = 90, X = 80, T = 0.5, r = 0.02, 
+                sigma = sigma*2, option_type = "call")
+
+print("Option value for sigma: ", value_s, "\n",
+      "Option value for 2 * sigma: ", value_2s)
+
+IBM_spot = IBM[:100]
+
+option_values = np.zeros(IBM_spot.size)
+
+for i,S in enumerate(IBM_spot.values):
+    option_values[i] = black_scholes(S = S, X = 140, T = 0.5, r = 0.02, 
+                        sigma = sigma, option_type = "put")
+
+option_axis.plot(option_values, color = "red", label = "Put Option")
+option_axis.legend(loc = "upper left")
+plt.show()
+
+sigma = np.sqrt(252) * IBM_returns.std()
+
+value = black_scholes(S = 70, X = 80, T = 0.5, r = 0.02, 
+                      sigma = sigma, option_type = "put")
+
+delta = bs_delta(S = 70, X = 80, T = 0.5, r = 0.02, 
+                 sigma = sigma, option_type = "put")
+
+value_change = black_scholes(S = 69.5, X = 80, T = 0.5, r = 0.02, 
+                             sigma = sigma, option_type = "put") - value
+
+print( (69.5 - 70) + (1/delta) * value_change )
+
+#PARAMETRIC ESTIMATION
+from scipy.stats import norm, anderson
+from scipy.stats import skewnorm, skewtest
+
+losses = prices_during
+
+params = norm.fit(losses)
+
+VaR_95 = norm.ppf(0.95, *params)
+print("VaR_95, Normal distribution: ", VaR_95)
+
+print("Anderson-Darling test result: ", anderson(losses))
+
+print("Skewtest result: ", skewtest(losses))
+
+params = skewnorm.fit(losses)
+
+VaR_95 = skewnorm.ppf(0.95, *params)
+print("VaR_95 from skew-normal: ", VaR_95)
+
+#Historical and Monte Carlo Simulation
+portfolio_returns = np.array([ x.dot(weights) for x in asset_returns])
+losses = - portfolio_returns
+VaR_95 = [np.quantile(x, 0.95) for x in losses]
+print("VaR_95, 2005-2006: ", VaR_95[0], '; VaR_95, 2007-2009: ', VaR_95[1])
+daily_loss = np.zeros((4 , N))
+for n in range(N):
+    correlated_randomness = e_cov @ norm.rvs(size = (4,total_steps))
+    steps = 1/total_steps
+    minute_losses = mu * steps + correlated_randomness * np.sqrt(steps)
+    daily_loss[:, n] = minute_losses.sum(axis=1)
+
+losses = weights @ daily_loss
+print("Monte Carlo VaR_95 estimate: ", np.quantile(losses, 0.95))
+
+#Structural Breaks
+Import statsmodels.api as sm
+
+plt.plot(port_q_min, label="Quarterly minimum return")
+
+plt.plot(vol_q_mean, label="Quarterly mean volatility")
+
+plt.legend()
+plt.show()
+
+mort_del = sm.add_constant(mort_del)
+
+result = sm.OLS(port_q_min, mort_del).fit()
+
+ssr_total = result.ssr
+print("Sum-of-squared residuals, 2005-2010: ", ssr_total)
+
+before_with_intercept = sm.add_constant(before['mort_del'])
+after_with_intercept  = sm.add_constant(after['mort_del'])
+
+r_b = sm.OLS(before['returns'], before_with_intercept).fit()
+r_a = sm.OLS(after['returns'],  after_with_intercept).fit()
+
+ssr_before = r_b.ssr
+ssr_after = r_a.ssr
+
+numerator = ((ssr_total - (ssr_before + ssr_after)) / 2)
+denominator = ((ssr_before + ssr_after) / (24 - 4))
+print("Chow test statistic: ", numerator / denominator)
+
+#Volatility and Extreme Values
+prices_with_citi = asset_prices.copy()
+prices_without_citi = asset_prices.drop(columns=['Citibank'])
+
+assets_with_citi = list(asset_prices.columns)
+
+citi_index = assets_with_citi.index('Citibank')
+
+assets_without_citi = [a for a in assets_with_citi if a != 'Citibank']
+
+weights_with_citi = np.array([0.25, 0.25, 0.25, 0.25])  # Adjust if necessary
+
+weights_without_citi = np.delete(weights_with_citi, citi_index)
+weights_without_citi = weights_without_citi / weights_without_citi.sum()
+
+ret_with_citi = prices_with_citi.pct_change().dot(weights_with_citi)
+ret_without_citi = prices_without_citi.pct_change().dot(weights_without_citi)
+
+vol_with_citi = ret_with_citi.rolling(30).std().dropna().rename("With Citi")
+vol_without_citi = ret_without_citi.rolling(30).std().dropna().rename("Without Citi")
+
+vol = pd.concat([vol_with_citi, vol_without_citi], axis=1)
+
+vol.plot().set_ylabel("Losses")
+plt.show()
+
+estimate_data = prices.loc[epochs['after']['start']:epochs['after']['end']].pct_change().dropna()
+
+VaR_95 = np.quantile(estimate_data, 0.95)
+
+extreme_values = backtest_data[backtest_data > VaR_95]
+
+print("VaR_95: ", VaR_95, "; Backtest: ", len(extreme_values) / len(backtest_data) )
+
+plt.stem(extreme_values.index, extreme_values)
+plt.ylabel("Extreme values > VaR_95"); plt.xlabel("Date")
+plt.show()
+
+#ADVANCED RISK MANAGEMENT
+#Extreme Value Theory
+from scipy.stats import genextreme
+
+weekly_maxima = losses.resample("W").max()
+
+axis_1.plot(weekly_maxima, label = "Weekly Maxima")
+axis_1.legend()
+plt.figure("weekly")
+plt.show()
+
+monthly_maxima = losses.resample("M").max()
+
+axis_2.plot(monthly_maxima, label = "Monthly Maxima")
+axis_2.legend()
+plt.figure("monthly")
+plt.show()
+
+quarterly_maxima = losses.resample("Q").max()
+
+axis_3.plot(quarterly_maxima, label = "Quarterly Maxima")
+axis_3.legend()
+plt.figure("quarterly")
+plt.show()
+
+losses.plot()
+
+extreme_losses = losses[losses > 0.10]
+
+extreme_losses.plot(style='o')
+plt.show()
+
+fitted = genextreme.fit(weekly_max)
+
+x = np.linspace(min(weekly_max), max(weekly_max), 100)
+plt.plot(x, genextreme.pdf(x, *fitted))
+plt.hist(weekly_max, 50, density = True, alpha = 0.3)
+plt.show()
+
+GE_historical = pd.read_csv(‘GE – Historical.csv’).pct_change()
+
+GE_weekly_maxima = -GE_historical.resample(‘W’).max()
+
+p = genextreme.fit(weekly_maxima)
+VaR_99 = genextreme.ppf(0.99, *p)
+CVaR_99 = (1 / (1 - 0.99)) * genextreme.expect(lambda x: x, 
+           args=(p[0],), loc = p[1], scale = p[2], lb = VaR_99)
+
+print("Reserve amount: ", 1000000 * CVaR_99)
+
+#Kernel Density Estimation
+#The Gaussian Kernel
+From scipy.stats import gaussian_kde
+
+Kde=gaussian_kde(losses)
+Loss_range = np.linespace(np.min(losses), np.max(losses), 1000)
+Plt.plot(loss_range, kde.pdf(loss_range))
+
+params = t.fit(losses)
+
+kde = gaussian_kde(losses)
+
+loss_range = np.linspace(np.min(losses), np.max(losses), 1000)
+axis.plot(loss_range, t.pdf(loss_range, *params), label = 'T distribution')
+axis.plot(loss_range, kde.pdf(loss_range), label = 'Gaussian KDE')
+plt.legend(); plt.show()
+
+VaR_99_T   = np.quantile(t.rvs(size=1000, *p), 0.99)
+VaR_99_KDE = np.quantile(kde.resample(size=1000), 0.99)
+
+integral_T   = t.expect(lambda x: x, args = (p[0],), loc = p[1], scale = p[2], lb = VaR_99_T)
+integral_KDE = kde.expect(lambda x: x, lb = VaR_99_KDE)
+
+CVaR_99_T   = (1 / (1 - 0.99)) * integral_T
+CVaR_99_KDE = (1 / (1 - 0.99)) * integral_KDE
+
+print("99% CVaR for T: ", CVaR_99_T, "; 99% CVaR for KDE: ", CVaR_99_KDE)
+
+#Neural Network Risk Management
+From tensorflow.keras.models import Sequential
+From tensorflow.keras.layers import Dense
+
+x = np.linspace(0, 10, 1000)
+y = np.sqrt(x)
+
+#Simple Model
+model = Sequential()
+model.add(Dense(16, input_dim=1, activation='relu'))
+model.add(Dense(1))
+
+model.compile(loss='mean_squared_error', optimizer='rmsprop')
+model.fit(x, y, epochs=100)
+
+plt.plot(x, y, x, model.predict(x))
+plt.show()
+#End Simple Model
+
+pt_training_input = prices.copy()
+pt_training_output = prices.copy()
+
+pre_trained_model = Sequential()
+pre_trained_model.add(Dense(128, input_dim= pt_training_input.shape[1], activation='relu'))
+pre_trained_model.add(Dense(64, activation='relu'))
+pre_trained_model.add(Dense(pt_training_output.shape[1], activation='linear'))
+
+pre_trained_model.compile(loss='mean_squared_error', optimizer=’rmsprop')
+
+training_input = prices.drop('Morgan Stanley', axis=1)
+training_output = prices['Morgan Stanley']
+
+model = Sequential()
+model.add(Dense(16, input_dim=3, activation='sigmoid'))
+model.add(Dense(8, activation='relu'))
+model.add(Dense(1))
+
+model.compile(loss='mean_squared_logarithmic_error', optimizer='rmsprop')
+model.fit(training_input, training_output, epochs=100)
+
+plt.scatter(training_output, model.predict(training_input)); 
+plt.show()
+
+model = Sequential()
+model.add(Dense(128, input_dim = 4, activation = 'relu'))
+model.add(Dense(64, activation = 'relu'))
+model.add(Dense(4, activation = 'relu'))
+
+asset_returns = np.array([0.001060, 0.003832, 0.000726, -0.002787])
+asset_returns.shape = (1,4)
+print("Predicted minimum volatility portfolio: ", pre_trained_model.predict(asset_returns))
