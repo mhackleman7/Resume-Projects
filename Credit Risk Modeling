@@ -1,0 +1,602 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import xgboost as xgb
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (classification_report, confusion_matrix,
+                             roc_auc_score, roc_curve, precision_recall_fscore_support)
+from sklearn.calibration import calibration_curve
+
+sns.set_style("whitegrid")
+
+# =============================================================================
+# SECTION: Data Loading and Exploration
+# =============================================================================
+# Load Data (adjust file_path as needed)
+file_path = "cr_loan.csv"
+cr_loan = pd.read_csv(file_path)
+
+# Check the structure of the data
+print("Data Types:")
+print(cr_loan.dtypes)
+
+# Check the first five rows of the data
+print("\nFirst Five Rows:")
+print(cr_loan.head())
+
+# Create a cross table of the loan intent and loan status
+print("\nCrosstab: Loan Intent vs Loan Status")
+print(pd.crosstab(cr_loan['loan_intent'], cr_loan['loan_status'], margins=True))
+
+# Create the cross table for loan status, home ownership, and the max employment length
+print("\nCrosstab: Loan Status vs Home Ownership (Max Employment Length)")
+print(pd.crosstab(cr_loan['loan_status'],
+                  cr_loan['person_home_ownership'],
+                  values=cr_loan['person_emp_length'],
+                  aggfunc='max'))
+
+# Create the scatter plot for age and loan amount
+plt.figure()
+plt.scatter(cr_loan['person_age'], cr_loan['loan_amnt'], c='blue', alpha=0.5)
+plt.xlabel("Person Age")
+plt.ylabel("Loan Amount")
+plt.title("Scatter Plot: Person Age vs Loan Amount")
+plt.show()
+
+# Print the names of columns that contain null values
+print("\nColumns with Null Values:")
+print(cr_loan.columns[cr_loan.isnull().any()])
+
+# Print the top five rows with nulls for employment length
+print("\nRows with null 'person_emp_length':")
+print(cr_loan[cr_loan['person_emp_length'].isnull()].head())
+
+# =============================================================================
+# SECTION: Data Cleaning and Preprocessing
+# =============================================================================
+# Impute the null values for employment length with the median
+cr_loan.loc[:, 'person_emp_length'] = cr_loan['person_emp_length'].fillna(cr_loan['person_emp_length'].median())
+
+
+# Create a histogram of employment length
+plt.figure()
+n, bins, patches = plt.hist(cr_loan['person_emp_length'], bins='auto', color='blue')
+plt.xlabel("Person Employment Length")
+plt.title("Histogram: Person Employment Length")
+plt.show()
+
+# Check number of nulls in loan interest rate
+print("\nNumber of nulls in 'loan_int_rate':", cr_loan['loan_int_rate'].isnull().sum())
+
+# Remove rows with missing loan_int_rate values
+indices = cr_loan[cr_loan['loan_int_rate'].isnull()].index
+cr_loan_clean = cr_loan.drop(indices)
+
+# =============================================================================
+# SECTION: Logistic Regression - Single Variable Model
+# =============================================================================
+# Create X and y for a single variable model (loan_int_rate)
+X = cr_loan_clean[['loan_int_rate']]
+y = cr_loan_clean['loan_status']
+
+# Create and fit a logistic regression model
+clf_logistic_single = LogisticRegression()
+clf_logistic_single.fit(X, y)
+
+print("\nSingle Variable Logistic Regression Parameters:")
+print(clf_logistic_single.get_params())
+print("Intercept:", clf_logistic_single.intercept_)
+
+# =============================================================================
+# SECTION: Logistic Regression - Multi Variable Model
+# =============================================================================
+# Create X (loan_int_rate and person_emp_length) and y data sets
+X_multi = cr_loan_clean[['loan_int_rate', 'person_emp_length']]
+y = cr_loan_clean['loan_status']
+
+# Create and train a new logistic regression
+clf_logistic_multi = LogisticRegression(solver='lbfgs').fit(X_multi, y)
+print("\nMulti Variable Logistic Regression Intercept:")
+print(clf_logistic_multi.intercept_)
+
+# =============================================================================
+# SECTION: Logistic Regression - Expanded Model with Train/Test Split
+# =============================================================================
+# Create X and y with three features: loan_int_rate, person_emp_length, person_income
+X = cr_loan_clean[['loan_int_rate', 'person_emp_length', 'person_income']]
+y = cr_loan_clean['loan_status']
+
+# Split data into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.4, random_state=123)
+
+# Train the logistic regression model on training data
+clf_logistic = LogisticRegression(solver='lbfgs').fit(X_train, y_train)
+print("\nLogistic Regression Coefficients (Full Model):")
+print(clf_logistic.coef_)
+
+# Create two subsets of training data for further modeling
+X1_train = X_train[['loan_int_rate', 'person_emp_length']]
+X2_train = X_train[['loan_int_rate', 'person_income']]
+
+print("\nX1_train (first 5 rows):")
+print(X1_train.head())
+print("\nX2_train (first 5 rows):")
+print(X2_train.head())
+
+# Train logistic regression models on the two subsets
+clf_logistic1 = LogisticRegression(solver='lbfgs').fit(X1_train, y_train)
+clf_logistic2 = LogisticRegression(solver='lbfgs').fit(X2_train, y_train)
+
+print("\nLogistic Regression Coefficients (X1_train):")
+print(clf_logistic1.coef_)
+print("\nLogistic Regression Coefficients (X2_train):")
+print(clf_logistic2.coef_)
+
+# =============================================================================
+# SECTION: Data Preparation with One-Hot Encoding
+# =============================================================================
+# Separate numeric and non-numeric columns
+cred_num = cr_loan_clean.select_dtypes(exclude=['object'])
+cred_str = cr_loan_clean.select_dtypes(include=['object'])
+
+# One-hot encode categorical (non-numeric) data
+cred_str_onehot = pd.get_dummies(cred_str)
+
+# Combine numeric and one-hot encoded data
+cr_loan_prep = pd.concat([cred_num, cred_str_onehot], axis=1)
+print("\nColumns in the Prepared Data:")
+print(cr_loan_prep.columns)
+
+# (Optional: re-fit logistic regression using X_train from earlier if needed)
+clf_logistic = LogisticRegression(solver='lbfgs').fit(X_train, y_train)
+
+# =============================================================================
+# SECTION: Logistic Regression - Predictions, Evaluation & Threshold Analysis
+# =============================================================================
+# Predict probabilities on the test set
+preds = clf_logistic.predict_proba(X_test)
+
+# Compare first five predicted probabilities to true labels
+preds_df = pd.DataFrame(preds[:, 1][0:5], columns=['prob_default'])
+true_df = y_test.head().reset_index(drop=True)
+print("\nComparison: True Labels vs. Predicted Probabilities (first 5 rows):")
+print(pd.concat([true_df, preds_df], axis=1))
+
+# Create a full predictions DataFrame and assign labels using threshold 0.50
+preds_df = pd.DataFrame(preds[:, 1], columns=['prob_default'])
+preds_df['loan_status'] = preds_df['prob_default'].apply(lambda x: 1 if x > 0.50 else 0)
+print("\nPredicted Loan Status Counts (Threshold 0.50):")
+print(preds_df['loan_status'].value_counts())
+
+# Classification report for threshold 0.50
+target_names = ['Non-Default', 'Default']
+print("\nClassification Report (Threshold 0.50):")
+print(classification_report(y_test, preds_df['loan_status'], target_names=target_names))
+
+# Print accuracy score
+print("Logistic Regression Accuracy on Test Set:")
+print(clf_logistic.score(X_test, y_test))
+
+# Plot ROC curve
+prob_default = preds[:, 1]
+fallout, sensitivity, thresholds = roc_curve(y_test, prob_default)
+plt.figure()
+plt.plot(fallout, sensitivity)
+plt.plot([0, 1], [0, 1], linestyle='--')
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve for Logistic Regression")
+plt.show()
+
+# Compute and print AUC
+auc = roc_auc_score(y_test, prob_default)
+print("Logistic Regression AUC:", auc)
+
+# Adjust threshold to 0.4 and reassign loan_status
+preds_df['loan_status'] = preds_df['prob_default'].apply(lambda x: 1 if x > 0.4 else 0)
+print("\nConfusion Matrix (Threshold 0.4):")
+print(confusion_matrix(y_test, preds_df['loan_status']))
+
+# Calculate estimated impact of default recall rate change
+avg_loan_amnt = cr_loan_clean['loan_amnt'].mean()
+num_defaults = preds_df['loan_status'].value_counts().get(1, 0)
+# Using precision_recall_fscore_support with average='binary' returns (precision, recall, fscore, support)
+default_recall = precision_recall_fscore_support(y_test, preds_df['loan_status'], average='binary')[1]
+estimated_impact = avg_loan_amnt * num_defaults * (1 - default_recall)
+print("Estimated Impact of New Default Recall Rate:", estimated_impact)
+
+# Threshold Analysis Plot
+thresh = np.arange(0.2, 0.7, 0.05)
+def_recalls = []
+nondef_recalls = []
+accs = []
+probabilities = preds[:, 1]
+
+for t in thresh:
+    temp_preds = (probabilities > t).astype(int)
+    prfs = precision_recall_fscore_support(y_test, temp_preds, average='binary')
+    def_recalls.append(prfs[1])  # recall for default class
+    # Compute recall for non-defaults (class 0)
+    tn = ((temp_preds == 0) & (y_test == 0)).sum()
+    fp = ((temp_preds == 1) & (y_test == 0)).sum()
+    nondef_recall = tn / (tn + fp) if (tn + fp) > 0 else 0
+    nondef_recalls.append(nondef_recall)
+    accs.append((temp_preds == y_test).mean())
+
+plt.figure()
+plt.plot(thresh, def_recalls, label="Default Recall")
+plt.plot(thresh, nondef_recalls, label="Non-default Recall")
+plt.plot(thresh, accs, label="Model Accuracy")
+plt.xlabel("Probability Threshold")
+plt.xticks(thresh)
+plt.legend()
+plt.title("Threshold Analysis")
+plt.show()
+
+# =============================================================================
+# SECTION: Gradient Boosted Trees using XGBoost
+# =============================================================================
+# Train a Gradient Boosted Trees (GBT) model on the same training data (X_train, y_train)
+clf_gbt = xgb.XGBClassifier(eval_metric='logloss').fit(X_train, y_train)
+
+# Predict probabilities with the GBT model on the test set
+gbt_preds = clf_gbt.predict_proba(X_test)
+gbt_preds_df = pd.DataFrame(gbt_preds[:, 1][0:5], columns=['prob_default'])
+true_df = y_test.head().reset_index(drop=True)
+print("\nGBT Model: First 5 Predictions vs True Labels:")
+print(pd.concat([true_df, gbt_preds_df], axis=1))
+
+# For portfolio analysis, get logistic regression predicted probabilities as well
+lr_preds = clf_logistic.predict_proba(X_test)[:, 1]
+
+# Create Portfolio DataFrame
+portfolio = pd.DataFrame({
+    'gbt_prob_default': gbt_preds[:, 1],
+    'lr_prob_default': lr_preds,  # Logistic Regression probabilities
+    'lgd': 0.2,  # Assumed 20% Loss Given Default
+    'loan_amnt': cr_loan_clean.loc[X_test.index, 'loan_amnt']  # Exposure at Default
+})
+print("\nPortfolio DataFrame (first 5 rows):")
+print(portfolio.head())
+
+# Calculate expected loss for each model: probability * LGD * loan amount
+portfolio['gbt_expected_loss'] = portfolio['gbt_prob_default'] * portfolio['lgd'] * portfolio['loan_amnt']
+portfolio['lr_expected_loss'] = portfolio['lr_prob_default'] * portfolio['lgd'] * portfolio['loan_amnt']
+
+print('LR expected loss:', np.sum(portfolio['lr_expected_loss']))
+print('GBT expected loss:', np.sum(portfolio['gbt_expected_loss']))
+
+# Predict loan_status labels using the GBT model
+gbt_label_preds = clf_gbt.predict(X_test)
+print("\nGBT Model Predicted Labels:")
+print(gbt_label_preds)
+
+print("\nClassification Report for GBT Model:")
+print(classification_report(y_test, gbt_label_preds, target_names=target_names))
+
+# --- Further GBT Analysis using a different feature set ---
+# Create a new feature set from the prepared data
+X_gbt = cr_loan_prep[['person_income', 'loan_int_rate',
+                      'loan_percent_income', 'loan_amnt',
+                      'person_home_ownership_MORTGAGE', 'loan_grade_F']]
+# Split the new feature set into training and test sets
+X_train_gbt, X_test_gbt, y_train_gbt, y_test_gbt = train_test_split(X_gbt, y, test_size=0.4, random_state=123)
+
+# Train the GBT model on the new feature set
+clf_gbt_new = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss').fit(X_train_gbt, y_train_gbt)
+print("\nGBT Model (New Feature Set) Column Importances (by weight):")
+print(clf_gbt_new.get_booster().get_score(importance_type='weight'))
+
+# Train a second GBT model on the X2_train subset for comparison
+# (First, split X2_train further to get a test set)
+X2_train_split, X2_test_split, y_train_split, y_test_split = train_test_split(X2_train, y_train, test_size=0.4, random_state=123)
+clf_gbt2 = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss').fit(X2_train_split, y_train_split)
+
+# Plot the column importance for the second model
+plt.figure()
+xgb.plot_importance(clf_gbt2, importance_type='weight')
+plt.title("GBT2 Model Column Importance")
+plt.show()
+
+# Predict and evaluate for both GBT models
+gbt_new_preds = clf_gbt_new.predict(X_test_gbt)
+gbt2_preds = clf_gbt2.predict(X2_test_split)
+
+print("\nClassification Report for GBT Model on New Feature Set:")
+print(classification_report(y_test_gbt, gbt_new_preds, target_names=target_names))
+
+print("\nClassification Report for GBT2 Model on X2 Test Set:")
+print(classification_report(y_test_split, gbt2_preds, target_names=target_names))
+
+# =============================================================================
+# SECTION: XGBoost Cross-Validation
+# =============================================================================
+n_folds = 5
+early_stopping = 10
+
+# Define XGBoost parameters for cross-validation
+params = {
+    'objective': 'binary:logistic',
+    'eval_metric': 'auc'
+}
+
+# Create DMatrix for XGBoost using X_train and y_train
+DTrain = xgb.DMatrix(X_train, label=y_train)
+
+# Run cross-validation with 5 rounds
+cv_df = xgb.cv(params, DTrain, num_boost_round=5, nfold=n_folds,
+               early_stopping_rounds=early_stopping, verbose_eval=False)
+print("\nXGBoost CV results (5 rounds):")
+print(cv_df)
+
+# Run a more extensive CV (600 rounds, 10 folds)
+cv_results_big = xgb.cv(params, DTrain, num_boost_round=600, nfold=10, shuffle=True, verbose_eval=False)
+mean_test_auc = np.mean(cv_results_big['test-auc-mean']).round(2)
+print("\nMean Test AUC over 600 Iterations:", mean_test_auc)
+
+plt.figure()
+plt.plot(cv_results_big['test-auc-mean'])
+plt.title('Test AUC Score Over 600 Iterations')
+plt.xlabel('Iteration Number')
+plt.ylabel('Test AUC Score')
+plt.show()
+
+# =============================================================================
+# SECTION: Additional GBT Model with Hyperparameters and Undersampling
+# =============================================================================
+# Create a GBT model with specified hyperparameters
+gbt_model = xgb.XGBClassifier(learning_rate=0.1, max_depth=7,
+                              use_label_encoder=False, eval_metric='logloss')
+
+# Calculate cross validation scores using 4-fold CV
+cv_scores = cross_val_score(gbt_model, X_train, y_train, cv=4)
+print("\nGBT Model Cross Validation Scores (4 folds):")
+print(cv_scores)
+print("Average accuracy: %0.2f (+/- %0.2f)" % (cv_scores.mean(), cv_scores.std() * 2))
+
+# Combine X_train and y_train for undersampling
+X_y_train = X_train.copy()
+X_y_train['loan_status'] = y_train
+
+# Separate defaults and non-defaults
+defaults = X_y_train[X_y_train['loan_status'] == 1]
+nondefaults = X_y_train[X_y_train['loan_status'] == 0]
+
+# Undersample non-defaults to match the number of defaults
+count_default = defaults.shape[0]
+nondefaults_under = nondefaults.sample(count_default, random_state=123)
+
+# Combine undersampled non-defaults with defaults
+X_y_train_under = pd.concat([nondefaults_under.reset_index(drop=True),
+                             defaults.reset_index(drop=True)], axis=0)
+print("\nLoan Status Counts in Undersampled Training Data:")
+print(X_y_train_under['loan_status'].value_counts())
+
+# Final classification reports for the GBT models
+print("\nFinal Classification Report for GBT Model (on X_test):")
+print(classification_report(y_test, gbt_label_preds, target_names=target_names))
+
+print("\nFinal Classification Report for GBT2 Model (on X2 Test Set):")
+print(classification_report(y_test_split, gbt2_preds, target_names=target_names))
+# =============================================================================
+# SECTION: Model Evaluation and Implementation
+# =============================================================================
+
+# --- Step 1: Generate Predictions from Both Models ---
+# (Assuming clf_logistic and clf_gbt have been trained on X_train/y_train)
+
+# For Logistic Regression:
+clf_logistic_preds = clf_logistic.predict_proba(X_test)[:, 1]
+preds_df_lr = pd.DataFrame({'prob_default': clf_logistic_preds})
+# Assign loan status using a 0.5 threshold (can be adjusted later)
+preds_df_lr['loan_status'] = preds_df_lr['prob_default'].apply(lambda x: 1 if x > 0.5 else 0)
+
+# For Gradient Boosted Trees:
+clf_gbt_preds = clf_gbt.predict_proba(X_test)[:, 1]
+preds_df_gbt = pd.DataFrame({'prob_default': clf_gbt_preds})
+preds_df_gbt['loan_status'] = preds_df_gbt['prob_default'].apply(lambda x: 1 if x > 0.5 else 0)
+
+
+# --- Step 2: Model Evaluation Metrics ---
+target_names = ['Non-Default', 'Default']
+
+# Classification Reports
+print("Logistic Regression Classification Report:")
+print(classification_report(y_test, preds_df_lr['loan_status'], target_names=target_names))
+print("\nGradient Boosted Trees Classification Report:")
+print(classification_report(y_test, preds_df_gbt['loan_status'], target_names=target_names))
+
+# Macro Average F1 Scores
+f1_lr = precision_recall_fscore_support(y_test, preds_df_lr['loan_status'], average='macro')[2]
+f1_gbt = precision_recall_fscore_support(y_test, preds_df_gbt['loan_status'], average='macro')[2]
+print("\nLogistic Regression Macro F1 Score:", f1_lr)
+print("Gradient Boosted Trees Macro F1 Score:", f1_gbt)
+
+
+# --- Step 3: ROC Curve Analysis ---
+# Calculate ROC components for both models
+fallout_lr, sensitivity_lr, thresholds_lr = roc_curve(y_test, clf_logistic_preds)
+fallout_gbt, sensitivity_gbt, thresholds_gbt = roc_curve(y_test, clf_gbt_preds)
+
+# Plot the ROC curves together
+plt.figure()
+plt.plot(fallout_lr, sensitivity_lr, color='blue', label='Logistic Regression')
+plt.plot(fallout_gbt, sensitivity_gbt, color='green', label='GBT')
+plt.plot([0, 1], [0, 1], linestyle='--', label='Random Prediction')
+plt.title("ROC Curve for LR and GBT")
+plt.xlabel("False Positive Rate (Fall-out)")
+plt.ylabel("True Positive Rate (Sensitivity)")
+plt.legend()
+plt.show()
+
+# Calculate and print AUC scores with formatting
+auc_lr = roc_auc_score(y_test, clf_logistic_preds)
+auc_gbt = roc_auc_score(y_test, clf_gbt_preds)
+print("Logistic Regression AUC Score: %0.2f" % auc_lr)
+print("Gradient Boosted Trees AUC Score: %0.2f" % auc_gbt)
+
+
+# --- Step 4: Calibration Curves ---
+# Compute calibration curves (using 10 bins here)
+mean_pred_val_lr, frac_of_pos_lr = calibration_curve(y_test, clf_logistic_preds, n_bins=10)
+mean_pred_val_gbt, frac_of_pos_gbt = calibration_curve(y_test, clf_gbt_preds, n_bins=10)
+
+# Plot the ideal calibration line
+plt.figure()
+plt.plot([0, 1], [0, 1], 'k:', label='Perfectly calibrated')
+plt.xlabel('Fraction of Positives')
+plt.ylabel('Average Predicted Probability')
+plt.title('Calibration Curve - Guideline')
+plt.legend()
+plt.show()
+
+# Plot calibration curve for Logistic Regression
+plt.figure()
+plt.plot([0, 1], [0, 1], 'k:', label='Perfectly calibrated')
+plt.plot(mean_pred_val_lr, frac_of_pos_lr, 's-', label='Logistic Regression')
+plt.xlabel('Average Predicted Probability')
+plt.ylabel('Fraction of Positives')
+plt.title('Calibration Curve - Logistic Regression')
+plt.legend()
+plt.show()
+
+# Plot calibration curves for both models together
+plt.figure()
+plt.plot([0, 1], [0, 1], 'k:', label='Perfectly calibrated')
+plt.plot(mean_pred_val_lr, frac_of_pos_lr, 's-', label='Logistic Regression')
+plt.plot(mean_pred_val_gbt, frac_of_pos_gbt, 's-', label='GBT')
+plt.xlabel('Average Predicted Probability')
+plt.ylabel('Fraction of Positives')
+plt.title('Calibration Curves')
+plt.legend()
+plt.show()
+
+
+# --- Step 5: Credit Acceptance Rates Analysis ---
+# For portfolio analysis, build a test prediction DataFrame.
+# (Here, we use GBT predictions; adjust as necessary.)
+test_pred_df = pd.DataFrame({
+    'prob_default': clf_gbt_preds,
+    'true_loan_status': y_test.values,  # ensure alignment; y_test can be a Series or array
+    'loan_amnt': cr_loan_clean.loc[X_test.index, 'loan_amnt'],
+    'loss_given_default': 0.2  # assumed constant Loss Given Default (LGD)
+})
+
+# Display summary statistics for predicted probabilities
+print("Predicted Probabilities Statistics:")
+print(test_pred_df['prob_default'].describe())
+
+# Calculate threshold for an 85% acceptance rate (i.e., top 15% worst probabilities rejected)
+threshold_85 = np.quantile(test_pred_df['prob_default'], 0.85)
+print("Threshold for 85% Acceptance Rate:", threshold_85)
+
+# Apply the threshold: accepted loans are those with probability <= threshold
+test_pred_df['pred_loan_status'] = test_pred_df['prob_default'].apply(lambda x: 1 if x > threshold_85 else 0)
+print("Loan Status Counts after Applying Threshold (1 = Reject/Default, 0 = Accept):")
+print(test_pred_df['pred_loan_status'].value_counts())
+
+# Plot histogram of predicted probabilities and mark the threshold
+plt.figure()
+plt.hist(clf_gbt_preds, color='blue', bins=40)
+plt.axvline(x=threshold_85, color='red', label='85% Acceptance Threshold')
+plt.title("Histogram of Predicted Probabilities (GBT)")
+plt.xlabel("Predicted Probability of Default")
+plt.ylabel("Frequency")
+plt.legend()
+plt.show()
+
+# Review the top 5 rows of the test prediction DataFrame
+print("Test Prediction DataFrame (first 5 rows):")
+print(test_pred_df.head())
+
+# Calculate the bad rate (defaults) among accepted loans
+accepted_loans = test_pred_df[test_pred_df['pred_loan_status'] == 0]
+bad_rate = np.sum(accepted_loans['true_loan_status']) / accepted_loans['true_loan_status'].count()
+print("Bad Rate for Accepted Loans:", bad_rate)
+
+print("Loan Amount Statistics:")
+print(test_pred_df['loan_amnt'].describe())
+
+
+# --- Step 6: Credit Strategy and Minimum Expected Loss Analysis ---
+# Initialize lists to store strategy metrics
+accept_rates = np.array([1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55,
+                          0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05])
+thresholds_list = []
+bad_rates = []
+estimated_values = []
+
+# Loop through each acceptance rate to compute thresholds and performance metrics
+for rate in accept_rates:
+    # Determine the threshold for the current acceptance rate using GBT probabilities
+    thresh = np.quantile(test_pred_df['prob_default'], rate).round(3)
+    thresholds_list.append(thresh)
+    
+    # Assign predicted loan status using the current threshold
+    # (Accepted if predicted probability is less than or equal to threshold)
+    test_pred_df['pred_loan_status'] = test_pred_df['prob_default'].apply(lambda x: 1 if x > thresh else 0)
+    
+    # Identify accepted loans
+    accepted_loans = test_pred_df[test_pred_df['pred_loan_status'] == 0]
+    
+    # Calculate the bad rate: proportion of accepted loans that are actually defaults
+    curr_bad_rate = (np.sum(accepted_loans['true_loan_status']) / len(accepted_loans)).round(3)
+    bad_rates.append(curr_bad_rate)
+    
+    # Calculate estimated value as: Total loan amount accepted minus expected loss on these loans
+    accepted_value = accepted_loans['loan_amnt'].sum()
+    expected_loss_accepted = (accepted_loans['prob_default'] *
+                              accepted_loans['loan_amnt'] *
+                              accepted_loans['loss_given_default']).sum()
+    est_value = accepted_value - expected_loss_accepted
+    estimated_values.append(est_value)
+
+# Create a strategy DataFrame summarizing the metrics for each acceptance rate
+strat_df = pd.DataFrame({
+    'Acceptance Rate': accept_rates,
+    'Threshold': thresholds_list,
+    'Bad Rate': bad_rates,
+    'Estimated Value': estimated_values
+})
+print("Credit Strategy Table:")
+print(strat_df)
+
+# Visualize the strategy table with a boxplot (to see distribution of metrics)
+plt.figure()
+strat_df.boxplot()
+plt.title("Strategy Table Boxplot")
+plt.show()
+
+# Plot the strategy curve: Acceptance Rate vs. Bad Rate
+plt.figure()
+plt.plot(strat_df['Acceptance Rate'], strat_df['Bad Rate'], marker='o')
+plt.xlabel('Acceptance Rate')
+plt.ylabel('Bad Rate')
+plt.title('Acceptance Rate vs. Bad Rate')
+plt.grid(True)
+plt.show()
+
+# Plot Estimated Value by Acceptance Rate
+plt.figure()
+plt.plot(strat_df['Acceptance Rate'], strat_df['Estimated Value'], marker='o')
+plt.title('Estimated Value by Acceptance Rate')
+plt.xlabel('Acceptance Rate')
+plt.ylabel('Estimated Value')
+plt.grid(True)
+plt.show()
+
+# Identify and print the optimal strategy (row with maximum estimated value)
+optimal_strategy = strat_df.loc[strat_df['Estimated Value'] == strat_df['Estimated Value'].max()]
+print("Optimal Credit Strategy (Max Estimated Value):")
+print(optimal_strategy)
+
+
+# --- Step 7: Bank's Expected Loss Calculation ---
+# For each loan in the test set, calculate expected loss as: probability * loan amount * LGD
+test_pred_df['expected_loss'] = test_pred_df['prob_default'] * test_pred_df['loan_amnt'] * test_pred_df['loss_given_default']
+
+# Sum the expected losses and format as currency
+total_exp_loss = round(np.sum(test_pred_df['expected_loss']), 2)
+print('Total Expected Loss:', '${:,.2f}'.format(total_exp_loss))
