@@ -1,0 +1,202 @@
+Created on Wed Mar 19 18:21:57 2025
+
+@author: mhack
+"""
+
+import yfinance as yf
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# -----------------------------
+# User–defined parameters
+# -----------------------------
+start_date = "1996-11-22"
+end_date   = "2006-12-31"
+
+# Initial rebalance dates (to be adjusted to market days)
+raw_rebalance_date_1 = "2000-06-23"  # Intended switch from SPY to 50/50 IVE/EFA
+raw_rebalance_date_2 = "2003-02-01"  # Intended switch from IVE/EFA back to SPY
+
+# Define tickers:
+# SPY: S&P 500 ETF (overall US market)
+# IVE: iShares S&P 500 Value ETF (US Large Value)
+# EFA: iShares MSCI EAFE ETF (Foreign Blend)
+tickers = ["SPY", "IVE", "EFA"]
+
+# -----------------------------
+# Create a business-day index for the full period.
+# -----------------------------
+all_days = pd.date_range(start=start_date, end=end_date, freq='B')
+
+# -----------------------------
+# Helper function to adjust a date to a valid market day.
+# -----------------------------
+def adjust_to_market_day(date, market_days):
+    """Return the first market day on or after the given date."""
+    date = pd.Timestamp(date)
+    if date in market_days:
+        return date
+    pos = market_days.searchsorted(date)
+    if pos < len(market_days):
+        return market_days[pos]
+    else:
+        return market_days[-1]
+
+# Adjust rebalance dates to valid market days.
+rebalance_date_1 = adjust_to_market_day(raw_rebalance_date_1, all_days)
+rebalance_date_2 = adjust_to_market_day(raw_rebalance_date_2, all_days)
+print("Rebalance Date 1 (Market Day):", rebalance_date_1)
+print("Rebalance Date 2 (Market Day):", rebalance_date_2)
+
+# -----------------------------
+# Download and prepare data for each ticker.
+# -----------------------------
+series_list = []
+for ticker in tickers:
+    df = yf.download(ticker, start=start_date, end=end_date)
+    if df.empty:
+        print(f"Ticker {ticker} returned no data. Creating a NaN series.")
+        s = pd.Series([float('nan')] * len(all_days), index=all_days)
+    else:
+        # Extract the "Close" column.
+        s = df['Close']
+        # If s is a DataFrame (as it is for SPY), extract the first column.
+        if isinstance(s, pd.DataFrame):
+            s = s.iloc[:, 0]
+        # Reindex to our full business-day index and backfill missing values.
+        s = s.reindex(all_days).bfill()
+    # Assign a name to the Series.
+    s.name = ticker
+    print(f"{ticker} series type: {type(s)}, shape: {s.shape}")
+    series_list.append(s)
+
+# Combine all Series into one DataFrame.
+prices = pd.concat(series_list, axis=1)
+print("Prices DataFrame:")
+print(prices.head())
+
+# -----------------------------
+# Create bi-weekly contribution schedule.
+# -----------------------------
+contrib_dates = pd.date_range(start=start_date, end=end_date, freq="14D")
+# Ensure that these contribution dates fall on business days.
+contrib_dates = [d for d in contrib_dates if d in prices.index]
+print("Number of contribution dates:", len(contrib_dates))
+
+# -----------------------------
+# Helper: get most recent available price on/before a given date.
+# -----------------------------
+def get_price(ticker, date):
+    available = prices[ticker].loc[:date]
+    if available.empty:
+        return prices[ticker].iloc[0]
+    else:
+        return available.iloc[-1]
+
+# -----------------------------
+# Strategy A: Constant SPY Investment
+# -----------------------------
+spy_shares_A = 0.0
+strategyA = []  # List of tuples: (date, portfolio_value)
+
+for d in contrib_dates:
+    d = pd.Timestamp(d)
+    spy_price = get_price("SPY", d)
+    shares_bought = 100 / spy_price
+    spy_shares_A += shares_bought
+    portfolio_value = spy_shares_A * get_price("SPY", d)
+    strategyA.append((d, portfolio_value))
+
+strategyA_df = pd.DataFrame(strategyA, columns=['Date', 'PortfolioValue']).set_index('Date')
+
+# -----------------------------
+# Strategy B: Tactical Allocation
+# Phases:
+#   Phase 1: From start_date until rebalance_date_1, invest in SPY.
+#   Phase 2: From rebalance_date_1 until rebalance_date_2, convert portfolio to a 50/50 mix of IVE and EFA.
+#            Contributions are split: $50 to IVE and $50 to EFA.
+#   Phase 3: From rebalance_date_2 until end_date, convert portfolio back to SPY, and contributions go to SPY.
+# -----------------------------
+spy_shares_B = 0.0  # For Phases 1 and 3.
+ive_shares   = 0.0  # For Phase 2.
+efa_shares   = 0.0  # For Phase 2.
+strategyB = []     # List of tuples: (date, portfolio_value)
+
+# Flags to ensure one-time rebalancing actions.
+rebalance1_done = False
+rebalance2_done = False
+
+for d in contrib_dates:
+    d = pd.Timestamp(d)
+    
+    # Determine phase based on date.
+    if d < rebalance_date_1:
+        phase = 1
+    elif d < rebalance_date_2:
+        phase = 2
+    else:
+        phase = 3
+
+    # --- Transition: Phase 1 -> Phase 2 ---
+    if phase == 2 and not rebalance1_done:
+        spy_price = get_price("SPY", d)
+        ive_price = get_price("IVE", d)
+        efa_price = get_price("EFA", d)
+        # Convert SPY holdings to cash.
+        cash = spy_shares_B * spy_price
+        cash_each = cash / 2.0
+        ive_shares = cash_each / ive_price
+        efa_shares = cash_each / efa_price
+        spy_shares_B = 0.0  # Clear SPY holdings.
+        rebalance1_done = True
+
+    # --- Transition: Phase 2 -> Phase 3 ---
+    if phase == 3 and not rebalance2_done:
+        spy_price = get_price("SPY", d)
+        ive_price = get_price("IVE", d)
+        efa_price = get_price("EFA", d)
+        # Convert IVE/EFA holdings to cash.
+        cash = ive_shares * ive_price + efa_shares * efa_price
+        spy_shares_B = cash / spy_price
+        ive_shares = 0.0
+        efa_shares = 0.0
+        rebalance2_done = True
+
+    # --- Contribution ---
+    if phase == 1:
+        spy_price = get_price("SPY", d)
+        spy_shares_B += 100 / spy_price
+    elif phase == 2:
+        ive_price = get_price("IVE", d)
+        efa_price = get_price("EFA", d)
+        ive_shares += 50 / ive_price
+        efa_shares += 50 / efa_price
+    else:  # Phase 3
+        spy_price = get_price("SPY", d)
+        spy_shares_B += 100 / spy_price
+
+    # --- Compute portfolio value ---
+    if phase == 1:
+        current_value = spy_shares_B * get_price("SPY", d)
+    elif phase == 2:
+        current_value = (ive_shares * get_price("IVE", d) +
+                         efa_shares * get_price("EFA", d))
+    else:
+        current_value = spy_shares_B * get_price("SPY", d)
+    
+    strategyB.append((d, current_value))
+
+strategyB_df = pd.DataFrame(strategyB, columns=['Date', 'PortfolioValue']).set_index('Date')
+
+# -----------------------------
+# Plot the Results
+# -----------------------------
+plt.figure(figsize=(12, 6))
+plt.plot(strategyA_df.index, strategyA_df['PortfolioValue'], label="Strategy A: Constant SPY")
+plt.plot(strategyB_df.index, strategyB_df['PortfolioValue'], label="Strategy B: Tactical Allocation")
+plt.xlabel("Date")
+plt.ylabel("Portfolio Value ($)")
+plt.title("Backtest Comparison: Constant SPY vs Tactical Allocation\n(Nov 22, 1996 - Dec 31, 2006)")
+plt.legend()
+plt.grid(True)
+plt.show()
