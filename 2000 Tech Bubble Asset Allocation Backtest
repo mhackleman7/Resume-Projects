@@ -200,3 +200,59 @@ plt.title("Backtest Comparison: Constant SPY vs Tactical Allocation\n(Nov 22, 19
 plt.legend()
 plt.grid(True)
 plt.show()
+
+# -----------------------------
+# Analyzing the Returns
+# -----------------------------
+# 1) Calculate total contributions.
+num_contributions = len(contrib_dates)
+total_contrib = num_contributions * 100.0  # $100 each time
+
+# 2) Extract final portfolio values.
+finalA = strategyA_df['PortfolioValue'].iloc[-1]
+finalB = strategyB_df['PortfolioValue'].iloc[-1]
+
+# 3) Compute cumulative returns relative to total dollars contributed.
+cum_ret_A = finalA / total_contrib - 1.0
+cum_ret_B = finalB / total_contrib - 1.0
+
+# 4) Plot the two strategies as before.
+plt.figure(figsize=(12, 6))
+plt.plot(strategyA_df.index, strategyA_df['PortfolioValue'], label="Strategy A: Constant SPY", color='C0')
+plt.plot(strategyB_df.index, strategyB_df['PortfolioValue'], label="Strategy B: Tactical Allocation", color='C1')
+plt.xlabel("Date")
+plt.ylabel("Portfolio Value ($)")
+plt.title("Backtest Comparison: Constant SPY vs Tactical Allocation\n(Nov 22, 1996 - Dec 31, 2006)")
+plt.legend()
+plt.grid(True)
+
+# 5) Add text annotations showing final cumulative returns.
+last_date = strategyA_df.index[-1]
+last_valA = strategyA_df['PortfolioValue'].iloc[-1]
+last_valB = strategyB_df['PortfolioValue'].iloc[-1]
+
+# For Strategy A:
+plt.text(
+    x=last_date + pd.DateOffset(days=30),
+    y=last_valA,
+    s=f"Ret: {cum_ret_A:.2%}",
+    color='C0',
+    va='bottom',
+    ha='left',
+    fontsize=10,
+    fontweight='bold'
+)
+
+# For Strategy B, offset the text slightly so they don't overlap.
+plt.text(
+    x=last_date + pd.DateOffset(days=30),
+    y=last_valB,
+    s=f"Ret: {cum_ret_B:.2%}",
+    color='C1',
+    va='bottom',
+    ha='left',
+    fontsize=10,
+    fontweight='bold'
+)
+
+plt.show()
